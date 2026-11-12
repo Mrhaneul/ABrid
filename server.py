@@ -19,6 +19,7 @@ Configuration (environment):
 """
 import asyncio
 import hashlib
+import html
 import json
 import os
 import secrets
@@ -30,7 +31,7 @@ from urllib.parse import urlencode
 import httpx
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from starlette.requests import Request
-from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
 DATA = Path(os.environ.get("BRIDGE_DATA", "data")).resolve()
 DATA.mkdir(parents=True, exist_ok=True)
@@ -72,8 +73,8 @@ CREATE TABLE IF NOT EXISTS messages (
   login TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('human','agent','system')),
   label TEXT NOT NULL, body TEXT NOT NULL, created_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread_id, id);
-CREATE TABLE IF NOT EXISTS notify_keys (
-  login TEXT PRIMARY KEY, key_hash TEXT NOT NULL UNIQUE, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS agent_keys (
+  key_hash TEXT PRIMARY KEY, login TEXT NOT NULL, created_at REAL NOT NULL);
 """)
 changed = asyncio.Condition()  # notified on every write (message, thread, pause)
 version = 0                    # bumped on every write; the web page long-polls on it
@@ -216,52 +217,33 @@ def caller():
     return login, f"{login}'s agent"
 
 
-@mcp.tool
-def whoami() -> dict:
-    """Your identity on ABrid, and who else is allowed in."""
-    login, label = caller()
+def core_whoami(login, label):
     return {"login": login, "label": label, "allowed_users": sorted(ALLOWED), "web": PUBLIC_URL}
 
 
-@mcp.tool(name="list_threads")
-def list_threads_tool() -> list[dict]:
-    """All threads, most recently active first, with message counts and whether a person paused them."""
-    caller()
+def core_list_threads(login, label):
     return list_threads()
 
 
-@mcp.tool(name="create_thread")
-async def create_thread_tool(title: str, first_message: str = "") -> dict:
-    """Start a new thread (topic). Optionally post the first message in it."""
-    login, label = caller()
-    tid = await create_thread(title, login, "agent", label, first_message)
-    return {"thread_id": tid}
+async def core_create_thread(login, label, title, first_message=""):
+    return {"thread_id": await create_thread(str(title), login, "agent", label, str(first_message or ""))}
 
 
-@mcp.tool
-def read_thread(thread_id: int, after_id: int = 0, limit: int = 200) -> dict:
-    """Messages of one thread with id greater than after_id (0 = from the start), oldest first."""
-    caller()
-    t = thread_row(get_thread(thread_id))
-    return {"thread": t, "messages": read_messages(thread_id, after_id, min(max(limit, 1), 500))}
+def core_read_thread(login, label, thread_id, after_id=0, limit=200):
+    t = thread_row(get_thread(int(thread_id)))
+    return {"thread": t, "messages": read_messages(int(thread_id), int(after_id), min(max(int(limit), 1), 500))}
 
 
-@mcp.tool
-async def post_message(thread_id: int, body: str) -> dict:
-    """Post a message (Markdown) to a thread. Fails if a person has paused the thread."""
-    login, label = caller()
-    t = get_thread(thread_id)
+async def core_post_message(login, label, thread_id, body):
+    t = get_thread(int(thread_id))
     if t["paused"]:
         raise PermissionError(f"thread {thread_id} is paused by {t['paused_by']}; wait for a person to resume it")
-    return {"message_id": await add_message(thread_id, login, "agent", label, body)}
+    return {"message_id": await add_message(int(thread_id), login, "agent", label, str(body))}
 
 
-@mcp.tool
-async def wait_for_messages(after_id: int, thread_id: int | None = None, timeout_seconds: int = MAX_WAIT) -> dict:
-    """Block until a message from someone else arrives with id > after_id (in one thread, or any
-    thread if thread_id is omitted), or until the timeout (max 50 s). Returns the new messages
-    and last_id to pass next time. Call it in a loop to stay in a conversation."""
-    login, label = caller()
+async def core_wait_for_messages(login, label, after_id, thread_id=None, timeout_seconds=MAX_WAIT):
+    after_id = int(after_id)
+    thread_id = None if thread_id is None else int(thread_id)
     if thread_id is not None:
         get_thread(thread_id)
     snap = {}
@@ -273,12 +255,55 @@ async def wait_for_messages(after_id: int, thread_id: int | None = None, timeout
         snap["msgs"] = [m for m in seen if not (m["kind"] == "agent" and m["label"] == label)]
         return snap["msgs"]
 
-    await wait_until(others, min(max(timeout_seconds, 1), MAX_WAIT))
+    await wait_until(others, min(max(int(timeout_seconds), 1), MAX_WAIT))
     msgs = snap["msgs"]
     out = {"messages": msgs, "last_id": snap["last"], "timed_out": not msgs}
     if thread_id is not None:
         out["paused"] = bool(get_thread(thread_id)["paused"])
     return out
+
+
+CORE = {"whoami": core_whoami, "list_threads": core_list_threads, "create_thread": core_create_thread,
+        "read_thread": core_read_thread, "post_message": core_post_message,
+        "wait_for_messages": core_wait_for_messages}
+
+
+@mcp.tool
+def whoami() -> dict:
+    """Your identity on ABrid, and who else is allowed in."""
+    return core_whoami(*caller())
+
+
+@mcp.tool(name="list_threads")
+def list_threads_tool() -> list[dict]:
+    """All threads, most recently active first, with message counts and whether a person paused them."""
+    return core_list_threads(*caller())
+
+
+@mcp.tool(name="create_thread")
+async def create_thread_tool(title: str, first_message: str = "") -> dict:
+    """Start a new thread (topic). Optionally post the first message in it."""
+    return await core_create_thread(*caller(), title, first_message)
+
+
+@mcp.tool
+def read_thread(thread_id: int, after_id: int = 0, limit: int = 200) -> dict:
+    """Messages of one thread with id greater than after_id (0 = from the start), oldest first."""
+    return core_read_thread(*caller(), thread_id, after_id, limit)
+
+
+@mcp.tool
+async def post_message(thread_id: int, body: str) -> dict:
+    """Post a message (Markdown) to a thread. Fails if a person has paused the thread."""
+    return await core_post_message(*caller(), thread_id, body)
+
+
+@mcp.tool
+async def wait_for_messages(after_id: int, thread_id: int | None = None, timeout_seconds: int = MAX_WAIT) -> dict:
+    """Block until a message from someone else arrives with id > after_id (in one thread, or any
+    thread if thread_id is omitted), or until the timeout (max 50 s). Returns the new messages
+    and last_id to pass next time. Call it in a loop to stay in a conversation."""
+    return await core_wait_for_messages(*caller(), after_id, thread_id, timeout_seconds)
 
 # ---------------------------------------------------------------- web (people)
 
@@ -318,6 +343,11 @@ def require_user(request: Request):
     return login, None
 
 
+def next_page(request: Request):
+    nxt = request.cookies.get("bridge_next", "")
+    return nxt if nxt.startswith("/link?") else "/"
+
+
 @mcp.custom_route("/", methods=["GET"])
 async def index(request: Request):
     if web_user(request) is None:
@@ -331,8 +361,9 @@ async def web_login(request: Request):
         login = request.query_params.get("as", "")
         if login.lower() not in ALLOWED:
             return HTMLResponse("not allowed", status_code=403)
-        resp = RedirectResponse("/", status_code=303)
+        resp = RedirectResponse(next_page(request), status_code=303)
         resp.set_cookie(COOKIE, signer.dumps(login), max_age=SESSION_DAYS * 86400, httponly=True, samesite="lax")
+        resp.delete_cookie("bridge_next")
         return resp
     state = secrets.token_urlsafe(24)
     q = urlencode({"client_id": CLIENT_ID, "redirect_uri": f"{PUBLIC_URL}/auth/callback/web",
@@ -359,10 +390,11 @@ async def web_callback(request: Request):
     login = u.json().get("login", "")
     if login.lower() not in ALLOWED:
         return HTMLResponse(f"GitHub user {login} is not on ABrid's allow list.", status_code=403)
-    resp = RedirectResponse("/", status_code=303)
+    resp = RedirectResponse(next_page(request), status_code=303)
     resp.set_cookie(COOKIE, signer.dumps(login), max_age=SESSION_DAYS * 86400, httponly=True, secure=True,
                     samesite="lax")
     resp.delete_cookie("bridge_state")
+    resp.delete_cookie("bridge_next")
     return resp
 
 
@@ -445,9 +477,14 @@ async def api_wait(request: Request):
     return JSONResponse({"version": version})
 
 
-# ---------------------------------------------------------------- notifications (Claude Code channel)
-# A person creates a notification key on the web page; the local channel add-on (static/abrid_channel.py)
-# long-polls /api/feed with it and pushes each new message into their idle Claude Code session.
+# ---------------------------------------------------------------- local add-on (one key per computer)
+# `curl -fsSL <url>/install | sh` downloads static/abrid_channel.py, starts a link, and the person approves it
+# in the browser (logged in with GitHub). The add-on then uses the computer key for the tools (/api/agent/*)
+# and, in Claude Code, long-polls /api/feed to push new messages into the session.
+
+LINK_TTL = 600
+links = {}  # code -> {"poll": token, "expires": t, "key": None | str, "login": None | str}
+
 
 def key_hash(key):
     return hashlib.sha256(key.encode()).hexdigest()
@@ -457,30 +494,102 @@ def key_user(request: Request):
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
         return None
-    r = db.execute("SELECT login FROM notify_keys WHERE key_hash=?", (key_hash(auth[7:].strip()),)).fetchone()
+    r = db.execute("SELECT login FROM agent_keys WHERE key_hash=?", (key_hash(auth[7:].strip()),)).fetchone()
     return r["login"] if r and r["login"].lower() in ALLOWED else None
 
 
-@mcp.custom_route("/api/notify-key", methods=["POST"])
-async def api_notify_key(request: Request):
-    """New notification key for the logged-in person; replaces (revokes) their previous one."""
+def purge_links():
+    now = time.time()
+    for c in [c for c, v in links.items() if v["expires"] < now]:
+        del links[c]
+
+
+@mcp.custom_route("/api/link/start", methods=["POST"])
+async def api_link_start(request: Request):
+    purge_links()
+    if len(links) > 50:
+        return JSONResponse({"error": "too many pending links; try again in a few minutes"}, status_code=429)
+    alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+    code = "".join(secrets.choice(alphabet) for _ in range(4)) + "-" + "".join(secrets.choice(alphabet) for _ in range(4))
+    poll = secrets.token_urlsafe(32)
+    links[code] = {"poll": poll, "expires": time.time() + LINK_TTL, "key": None, "login": None}
+    return JSONResponse({"code": code, "poll": poll, "link": f"{PUBLIC_URL}/link?code={code}"})
+
+
+@mcp.custom_route("/api/link/poll", methods=["GET"])
+async def api_link_poll(request: Request):
+    purge_links()
+    token = request.query_params.get("poll", "")
+    for code, v in list(links.items()):
+        if secrets.compare_digest(v["poll"], token):
+            if v["key"] is None:
+                return JSONResponse({"pending": True})
+            del links[code]
+            return JSONResponse({"key": v["key"], "login": v["login"], "url": PUBLIC_URL})
+    return JSONResponse({"error": "link expired; run the installer again"}, status_code=410)
+
+
+@mcp.custom_route("/link", methods=["GET"])
+async def link_page(request: Request):
+    code = request.query_params.get("code", "")
+    login = web_user(request)
+    if login is None:
+        resp = HTMLResponse((HERE / "static" / "login.html").read_text())
+        resp.set_cookie("bridge_next", f"/link?{urlencode({'code': code})}", max_age=900, httponly=True, samesite="lax")
+        return resp
+    page = (HERE / "static" / "link.html").read_text()
+    ok = code in links and links[code]["key"] is None
+    return HTMLResponse(page.replace("__LOGIN__", html.escape(login)).replace("__CODE__", html.escape(code))
+                        .replace("__STATE__", "pending" if ok else "expired"))
+
+
+@mcp.custom_route("/api/link/approve", methods=["POST"])
+async def api_link_approve(request: Request):
     login, err = require_user(request)
     if err:
         return err
+    body = await json_body(request)
+    purge_links()
+    code = str((body or {}).get("code", ""))
+    v = links.get(code)
+    if v is None or v["key"] is not None:
+        return JSONResponse({"error": "this link expired or was already used; run the installer again"}, status_code=410)
     key = "abrid_" + secrets.token_urlsafe(32)
-    db.execute("INSERT INTO notify_keys(login, key_hash, created_at) VALUES (?,?,?) "
-               "ON CONFLICT(login) DO UPDATE SET key_hash=excluded.key_hash, created_at=excluded.created_at",
-               (login, key_hash(key), time.time()))
-    return JSONResponse({"key": key, "url": PUBLIC_URL})
+    db.execute("INSERT INTO agent_keys(key_hash, login, created_at) VALUES (?,?,?)", (key_hash(key), login, time.time()))
+    v["key"], v["login"] = key, login
+    return JSONResponse({"ok": True})
+
+
+@mcp.custom_route("/api/agent/{tool}", methods=["POST"])
+async def api_agent(request: Request):
+    """The ABrid tools for the local add-on, authorized by the computer key."""
+    login = key_user(request)
+    if login is None:
+        return JSONResponse({"error": "invalid key for this computer; run the ABrid installer again"}, status_code=401)
+    fn = CORE.get(request.path_params["tool"])
+    if fn is None:
+        return JSONResponse({"error": "unknown tool"}, status_code=404)
+    args = await json_body(request)
+    if args is None:
+        return bad_request("expected a JSON object")
+    try:
+        out = fn(login, f"{login}'s agent", **args)
+        if asyncio.iscoroutine(out):
+            out = await out
+    except PermissionError as e:
+        return JSONResponse({"error": str(e)}, status_code=403)
+    except (TypeError, ValueError) as e:
+        return bad_request(str(e))
+    return JSONResponse(out)
 
 
 @mcp.custom_route("/api/feed", methods=["GET"])
 async def api_feed(request: Request):
-    """Long-poll for the channel add-on: messages with id > after from anyone but the key owner's own agent.
+    """Long-poll for the add-on: messages with id > after from anyone but the key owner's own agent.
     after=-1 returns only the current last id (start from now)."""
     login = key_user(request)
     if login is None:
-        return JSONResponse({"error": "invalid notification key"}, status_code=401)
+        return JSONResponse({"error": "invalid key for this computer; run the ABrid installer again"}, status_code=401)
     try:
         after = int(request.query_params.get("after", -1))
         wait = min(max(int(request.query_params.get("wait", MAX_WAIT)), 0), MAX_WAIT)
@@ -507,6 +616,12 @@ async def api_feed(request: Request):
 @mcp.custom_route("/channel.py", methods=["GET"])
 async def channel_script(request: Request):
     return FileResponse(HERE / "static" / "abrid_channel.py", media_type="text/x-python")
+
+
+@mcp.custom_route("/install", methods=["GET"])
+async def install_script(request: Request):
+    sh = (HERE / "static" / "install.sh").read_text().replace("__ABRID_URL__", PUBLIC_URL)
+    return Response(sh, media_type="text/x-shellscript")
 
 
 @mcp.custom_route("/healthz", methods=["GET"])

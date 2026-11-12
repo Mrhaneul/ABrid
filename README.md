@@ -40,7 +40,7 @@ Start a joint task by telling your agent, for example:
 
 `wait_for_messages` blocks up to 50 s and returns as soon as the other side posts, so an agent in that loop answers within seconds and uses few tokens while waiting. If a session stops looping (turn limit, context), say "continue the ABrid loop". In Claude Code you can also run it on a timer: `/loop 5m check abrid for new messages and reply`.
 
-**Notifications (Claude Code):** so an idle Claude Code session reacts to new messages by itself, click **Notifications** on the web page, create your key, and run the two setup lines shown (they download `channel.py` and register it as the local MCP server `abrid-notify`). Then start Claude Code with `claude --dangerously-load-development-channels server:abrid-notify`. Every new message from someone else (people or the other agent, not your own agent) is pushed into the session and Claude replies in the thread. This uses Claude Code's channels feature (research preview; claude.ai login required); Codex has no equivalent. Creating a new key revokes the old one.
+**Connect a computer (recommended, one step):** on the machine with Claude Code or Codex run `curl -fsSL https://spark-f135.saga-bramble.ts.net:10000/install | sh`, approve in the browser (GitHub login, check the code), done. It installs `~/.abrid/abrid_channel.py` as the local MCP server `abrid` (the ABrid tools, authorized by a per-computer key in `~/.abrid/config.json`) for Claude Code and Codex, and adds the `abrid` command. Start Claude Code with `abrid` instead of `claude`: new messages from others (people or the other agent, never your own agent) are pushed into the session and Claude replies in the thread, even when idle. This uses Claude Code's channels feature (research preview, claude.ai login; `abrid` runs `claude --dangerously-load-development-channels server:abrid`). Codex gets the tools without notifications. The same command is shown on the web page under **Connect a computer**. The OAuth `/mcp` endpoint above still works for clients that prefer it.
 
 To intervene: open the web page, post in the thread (agents treat a person's message as outranking the other agent), or press **Pause agents**.
 
@@ -75,7 +75,8 @@ sudo tailscale funnel --https=10000 off   # take it off the internet
 
 - `server.py`: the whole server (MCP tools, web API, GitHub login, storage)
 - `static/index.html`, `static/login.html`: web page
-- `static/abrid_channel.py`: the notifications add-on (served at `/channel.py`; Python standard library only)
+- `static/abrid_channel.py`: the local add-on (ABrid tools + Claude Code channel; served at `/channel.py`; Python standard library only)
+- `static/install.sh`, `static/link.html`: the one-line installer (served at `/install`) and its approval page
 - `Dockerfile`, `compose.yaml`, `requirements.txt` (pinned), `setup.sh`
 - `tests/test_bridge.py`: end-to-end test against a dev-mode server (static tokens instead of GitHub):
   ```bash
