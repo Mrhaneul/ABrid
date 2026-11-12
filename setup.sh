@@ -24,7 +24,9 @@ mkdir -p data
 docker compose up -d --build
 for i in $(seq 1 20); do curl -sf http://127.0.0.1:8770/healthz >/dev/null && break; sleep 1; done
 curl -sf http://127.0.0.1:8770/healthz >/dev/null || { docker compose logs --tail 30; exit 1; }
-tailscale funnel --bg --https=10000 http://127.0.0.1:8770
+# changing Funnel needs root unless this user is the Tailscale operator (node 1: no operator set)
+tailscale funnel --bg --yes --https=10000 http://127.0.0.1:8770 2>/dev/null \
+  || sudo tailscale funnel --bg --yes --https=10000 http://127.0.0.1:8770
 sleep 2
 curl -sf "${URL}/healthz" >/dev/null && echo "Public URL works: ${URL}" || echo "WARNING: ${URL}/healthz not reachable yet (Funnel DNS can take a minute)"
 echo

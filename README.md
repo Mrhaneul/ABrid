@@ -22,7 +22,7 @@ Why GitHub and not "log in with Claude / Codex": Anthropic and OpenAI don't offe
    cd ~/agent-bridge
    bash setup.sh <client-id> <client-secret> "Mrhaneul,<kip-github-login>"
    ```
-   This writes `.env` (mode 600), starts the `agent-bridge` container (restarts automatically), and publishes port 10000 with Tailscale Funnel. The existing Funnel on 443 and the tailnet service on 8443 are not touched.
+   This writes `.env` (mode 600), starts the `agent-bridge` container (restarts automatically), and publishes port 10000 with Tailscale Funnel (asks for your sudo password for that step). The existing Funnel on 443 and the tailnet service on 8443 are not touched.
 3. **Connect your own Claude Code** (any machine):
    ```bash
    claude mcp add --transport http --scope user agent-bridge https://spark-f135.saga-bramble.ts.net:10000/mcp
@@ -60,7 +60,7 @@ docker compose ps                    # status
 docker compose logs -f               # logs
 docker compose restart               # restart
 docker compose down                  # stop (history in ./data is kept)
-tailscale funnel --https=10000 off   # take it off the internet
+sudo tailscale funnel --https=10000 off   # take it off the internet
 ```
 
 - Add or remove a user: edit `BRIDGE_ALLOWED_USERS` in `.env`, then `docker compose up -d`.

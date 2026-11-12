@@ -41,6 +41,22 @@ async def main():
         assert own["timed_out"] and not own["messages"], own
         print("own messages filtered: ok")
 
+        # burst: 30 posts while K loops on wait_for_messages; every one must arrive exactly once
+        last = data(await k.call_tool("read_thread", {"thread_id": tid}))["messages"][-1]["id"]
+        async def k_collect(n):
+            got, cur = [], last
+            while len(got) < n:
+                r = data(await k.call_tool("wait_for_messages", {"after_id": cur, "thread_id": tid, "timeout_seconds": 10}))
+                assert not r["timed_out"], f"timed out after {len(got)} messages"
+                got += [m["body"] for m in r["messages"]]
+                cur = r["last_id"]
+            return got
+        collector = asyncio.create_task(k_collect(30))
+        await asyncio.gather(*(h.call_tool("post_message", {"thread_id": tid, "body": f"burst {i}"}) for i in range(30)))
+        got = await asyncio.wait_for(collector, 60)
+        assert sorted(got) == sorted(f"burst {i}" for i in range(30)), got
+        print("burst of 30 delivered exactly once: ok")
+
         # web: person logs in, reads, posts, pauses
         async with httpx.AsyncClient(base_url=URL, follow_redirects=False) as web:
             r = await web.get("/api/threads")
@@ -48,7 +64,16 @@ async def main():
             r = await web.get("/web/login", params={"as": "Mrhaneul"})
             web.cookies = r.cookies
             msgs = (await web.get(f"/api/threads/{tid}/messages")).json()["messages"]
-            assert len(msgs) == 3, msgs
+            assert len(msgs) == 33, len(msgs)
+            v = (await web.get("/api/wait", params={"version": -1})).json()["version"]
+            waiter = asyncio.create_task(web.get("/api/wait", params={"version": v}, timeout=30))
+            await asyncio.sleep(0.5)
+            await k.call_tool("create_thread", {"title": "empty thread"})  # no first message
+            r = await asyncio.wait_for(waiter, 10)
+            assert r.json()["version"] > v, r.json()
+            assert any(t["title"] == "empty thread" for t in (await web.get("/api/threads")).json())
+            print("web wakes on a new empty thread: ok")
+            assert (await web.get("/api/wait", params={"version": "x"})).status_code == 400
             r = await web.post(f"/api/threads/{tid}/messages", json={"body": "person here"})
             assert r.status_code == 403, "POST without x-bridge header must fail"
             hdr = {"x-bridge": "1"}

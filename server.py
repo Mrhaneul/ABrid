@@ -53,6 +53,8 @@ if not ALLOWED:
     raise SystemExit("BRIDGE_ALLOWED_USERS is empty; refusing to start with nobody allowed")
 if not DEV_TOKENS and not (CLIENT_ID and CLIENT_SECRET):
     raise SystemExit("GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET are not set")
+if DEV_TOKENS and PUBLIC_URL.startswith("https://"):
+    raise SystemExit("BRIDGE_DEV_TOKENS is for local testing only; refusing to start with a public URL")
 
 # ---------------------------------------------------------------- storage
 
@@ -69,7 +71,33 @@ CREATE TABLE IF NOT EXISTS messages (
   label TEXT NOT NULL, body TEXT NOT NULL, created_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread_id, id);
 """)
-new_message = asyncio.Condition()
+changed = asyncio.Condition()  # notified on every write (message, thread, pause)
+version = 0                    # bumped on every write; the web page long-polls on it
+
+
+async def bump():
+    global version
+    async with changed:
+        version += 1
+        changed.notify_all()
+
+
+async def wait_until(check, seconds):
+    """Return check() as soon as it is truthy, or its last value after `seconds`.
+    check() runs under the condition lock, so a write between check and wait cannot be missed."""
+    deadline = time.monotonic() + seconds
+    async with changed:
+        result = check()
+        while not result:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            try:
+                await asyncio.wait_for(changed.wait(), timeout=left)
+            except asyncio.TimeoutError:
+                pass
+            result = check()
+        return result
 
 
 def thread_row(r):
@@ -91,8 +119,9 @@ def get_thread(thread_id):
 
 def list_threads():
     rows = db.execute("""SELECT t.*, (SELECT MAX(id) FROM messages m WHERE m.thread_id=t.id) AS last_id,
+                         (SELECT MAX(created_at) FROM messages m WHERE m.thread_id=t.id) AS last_at,
                          (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.id) AS n
-                         FROM threads t ORDER BY COALESCE(last_id, 0) DESC, t.id DESC""").fetchall()
+                         FROM threads t ORDER BY MAX(COALESCE(last_at, 0), t.created_at) DESC, t.id DESC""").fetchall()
     return [thread_row(r) | {"last_message_id": r["last_id"], "messages": r["n"]} for r in rows]
 
 
@@ -113,8 +142,7 @@ async def add_message(thread_id, login, kind, label, body):
         raise ValueError("message longer than 100,000 characters")
     cur = db.execute("INSERT INTO messages(thread_id, login, kind, label, body, created_at) VALUES (?,?,?,?,?,?)",
                      (thread_id, login, kind, label, body, time.time()))
-    async with new_message:
-        new_message.notify_all()
+    await bump()
     return cur.lastrowid
 
 
@@ -126,8 +154,7 @@ async def create_thread(title, login, kind, label, first_message):
     if first_message and first_message.strip():
         await add_message(cur.lastrowid, login, kind, label, first_message)
     else:
-        async with new_message:
-            new_message.notify_all()
+        await bump()
     return cur.lastrowid
 
 
@@ -231,25 +258,20 @@ async def wait_for_messages(after_id: int, thread_id: int | None = None, timeout
     thread if thread_id is omitted), or until the timeout (max 50 s). Returns the new messages
     and last_id to pass next time. Call it in a loop to stay in a conversation."""
     login, label = caller()
-    deadline = time.monotonic() + min(max(timeout_seconds, 1), MAX_WAIT)
+    if thread_id is not None:
+        get_thread(thread_id)
+    snap = {}
 
-    def fresh():
-        return [m for m in read_messages(thread_id, after_id) if not (m["kind"] == "agent" and m["label"] == label)]
+    def others():
+        # one query per check, so the returned messages and last_id always agree
+        seen = read_messages(thread_id, after_id)
+        snap["last"] = seen[-1]["id"] if seen else after_id
+        snap["msgs"] = [m for m in seen if not (m["kind"] == "agent" and m["label"] == label)]
+        return snap["msgs"]
 
-    msgs = fresh()
-    while not msgs:
-        left = deadline - time.monotonic()
-        if left <= 0:
-            break
-        try:
-            async with new_message:
-                await asyncio.wait_for(new_message.wait(), timeout=left)
-        except asyncio.TimeoutError:
-            break
-        msgs = fresh()
-    seen = read_messages(thread_id, after_id)
-    last = seen[-1]["id"] if seen else after_id
-    out = {"messages": msgs, "last_id": last, "timed_out": not msgs}
+    await wait_until(others, min(max(timeout_seconds, 1), MAX_WAIT))
+    msgs = snap["msgs"]
+    out = {"messages": msgs, "last_id": snap["last"], "timed_out": not msgs}
     if thread_id is not None:
         out["paused"] = bool(get_thread(thread_id)["paused"])
     return out
@@ -269,6 +291,18 @@ def web_user(request: Request):
     except BadSignature:
         return None
     return login if login.lower() in ALLOWED else None
+
+
+def bad_request(msg):
+    return JSONResponse({"error": msg}, status_code=400)
+
+
+async def json_body(request: Request):
+    try:
+        body = await request.json()
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
 
 
 def require_user(request: Request):
@@ -348,9 +382,11 @@ async def api_threads(request: Request):
         return err
     if request.method == "GET":
         return JSONResponse(list_threads())
-    body = await request.json()
+    body = await json_body(request)
+    if body is None:
+        return bad_request("expected a JSON object")
     try:
-        tid = await create_thread(body.get("title", ""), login, "human", login, body.get("first_message", ""))
+        tid = await create_thread(str(body.get("title", "")), login, "human", login, str(body.get("first_message", "")))
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     return JSONResponse({"thread_id": tid})
@@ -367,8 +403,10 @@ async def api_messages(request: Request):
         if request.method == "GET":
             after = int(request.query_params.get("after", 0))
             return JSONResponse({"thread": t, "messages": read_messages(tid, after, 500)})
-        body = await request.json()
-        return JSONResponse({"message_id": await add_message(tid, login, "human", login, body.get("body", ""))})
+        body = await json_body(request)
+        if body is None:
+            return bad_request("expected a JSON object")
+        return JSONResponse({"message_id": await add_message(tid, login, "human", login, str(body.get("body", "")))})
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 
@@ -378,7 +416,9 @@ async def api_pause(request: Request):
     login, err = require_user(request)
     if err:
         return err
-    body = await request.json()
+    body = await json_body(request)
+    if body is None:
+        return bad_request("expected a JSON object")
     try:
         await set_paused(request.path_params["tid"], bool(body.get("paused")), login)
     except ValueError as e:
@@ -388,23 +428,17 @@ async def api_pause(request: Request):
 
 @mcp.custom_route("/api/wait", methods=["GET"])
 async def api_wait(request: Request):
-    """Long-poll for the web page: returns when any message with id > after exists (max 25 s)."""
+    """Long-poll for the web page: returns when anything changed after `version` (max 25 s).
+    A restart resets the counter, so a client holding a higher number is answered at once."""
     login, err = require_user(request)
     if err:
         return err
-    after = int(request.query_params.get("after", 0))
-    deadline = time.monotonic() + 25
-    while not read_messages(None, after, 1):
-        left = deadline - time.monotonic()
-        if left <= 0:
-            break
-        try:
-            async with new_message:
-                await asyncio.wait_for(new_message.wait(), timeout=left)
-        except asyncio.TimeoutError:
-            break
-    r = db.execute("SELECT MAX(id) FROM messages").fetchone()[0] or 0
-    return JSONResponse({"last_id": r})
+    try:
+        seen = int(request.query_params.get("version", -1))
+    except ValueError:
+        return bad_request("version must be an integer")
+    await wait_until(lambda: version != seen, 25)
+    return JSONResponse({"version": version})
 
 
 @mcp.custom_route("/healthz", methods=["GET"])
