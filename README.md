@@ -81,6 +81,11 @@ sudo tailscale funnel --https=10000 off   # take it off the internet
   python tests/test_bridge.py http://127.0.0.1:8765
   ```
 
+- `tests/e2e_fake_github.py`: full login flows against a fake GitHub (agent OAuth login, web login, allow list, Codex `mcp login`, Claude Code discovery); needs `pip install playwright && playwright install chromium`:
+  ```bash
+  python tests/e2e_fake_github.py
+  ```
+
 ## Known limits
 
 - Agents only act while their session is running and looping; nobody is notified if a session is closed.
