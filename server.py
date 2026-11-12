@@ -18,6 +18,7 @@ Configuration (environment):
   BRIDGE_DEV_TOKENS      local testing only: "token:login,token:login" replaces GitHub auth
 """
 import asyncio
+import hashlib
 import json
 import os
 import secrets
@@ -71,6 +72,8 @@ CREATE TABLE IF NOT EXISTS messages (
   login TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('human','agent','system')),
   label TEXT NOT NULL, body TEXT NOT NULL, created_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread_id, id);
+CREATE TABLE IF NOT EXISTS notify_keys (
+  login TEXT PRIMARY KEY, key_hash TEXT NOT NULL UNIQUE, created_at REAL NOT NULL);
 """)
 changed = asyncio.Condition()  # notified on every write (message, thread, pause)
 version = 0                    # bumped on every write; the web page long-polls on it
@@ -440,6 +443,70 @@ async def api_wait(request: Request):
         return bad_request("version must be an integer")
     await wait_until(lambda: version != seen, 25)
     return JSONResponse({"version": version})
+
+
+# ---------------------------------------------------------------- notifications (Claude Code channel)
+# A person creates a notification key on the web page; the local channel add-on (static/abrid_channel.py)
+# long-polls /api/feed with it and pushes each new message into their idle Claude Code session.
+
+def key_hash(key):
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def key_user(request: Request):
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None
+    r = db.execute("SELECT login FROM notify_keys WHERE key_hash=?", (key_hash(auth[7:].strip()),)).fetchone()
+    return r["login"] if r and r["login"].lower() in ALLOWED else None
+
+
+@mcp.custom_route("/api/notify-key", methods=["POST"])
+async def api_notify_key(request: Request):
+    """New notification key for the logged-in person; replaces (revokes) their previous one."""
+    login, err = require_user(request)
+    if err:
+        return err
+    key = "abrid_" + secrets.token_urlsafe(32)
+    db.execute("INSERT INTO notify_keys(login, key_hash, created_at) VALUES (?,?,?) "
+               "ON CONFLICT(login) DO UPDATE SET key_hash=excluded.key_hash, created_at=excluded.created_at",
+               (login, key_hash(key), time.time()))
+    return JSONResponse({"key": key, "url": PUBLIC_URL})
+
+
+@mcp.custom_route("/api/feed", methods=["GET"])
+async def api_feed(request: Request):
+    """Long-poll for the channel add-on: messages with id > after from anyone but the key owner's own agent.
+    after=-1 returns only the current last id (start from now)."""
+    login = key_user(request)
+    if login is None:
+        return JSONResponse({"error": "invalid notification key"}, status_code=401)
+    try:
+        after = int(request.query_params.get("after", -1))
+        wait = min(max(int(request.query_params.get("wait", MAX_WAIT)), 0), MAX_WAIT)
+    except ValueError:
+        return bad_request("after and wait must be integers")
+    if after < 0:
+        last = db.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
+        return JSONResponse({"messages": [], "last_id": last, "login": login})
+    own = f"{login}'s agent"
+    snap = {}
+
+    def others():
+        rows = db.execute("SELECT m.*, t.title FROM messages m JOIN threads t ON t.id=m.thread_id "
+                          "WHERE m.id>? ORDER BY m.id LIMIT 100", (after,)).fetchall()
+        snap["last"] = rows[-1]["id"] if rows else after
+        snap["msgs"] = [msg_row(r) | {"thread_title": r["title"]} for r in rows
+                        if not (r["kind"] == "agent" and r["label"] == own)]
+        return snap["msgs"]
+
+    await wait_until(others, wait)
+    return JSONResponse({"messages": snap["msgs"], "last_id": snap["last"], "login": login})
+
+
+@mcp.custom_route("/channel.py", methods=["GET"])
+async def channel_script(request: Request):
+    return FileResponse(HERE / "static" / "abrid_channel.py", media_type="text/x-python")
 
 
 @mcp.custom_route("/healthz", methods=["GET"])

@@ -47,6 +47,12 @@
   .empty { color:var(--muted); padding:40px; text-align:center; }
   .help { color:var(--muted); font-size:13px; padding:12px 14px; }
   .help code { font-size:12px; overflow-wrap:anywhere; }
+  dialog { border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink); max-width:min(760px, calc(100vw - 32px)); padding:18px 20px; }
+  dialog::backdrop { background:rgba(0,0,0,.4); }
+  dialog h2 { font-size:17px; margin:0 0 8px; }
+  dialog pre { background:var(--bg); border:1px solid var(--line); border-radius:7px; padding:10px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:13px; }
+  dialog p, dialog li { font-size:14px; }
+  .warn { color:var(--warn); }
   @media (max-width: 760px) { main { grid-template-columns:1fr; height:auto; } aside { max-height:38vh; border-right:0; border-bottom:1px solid var(--line); } section { height:62vh; } }
 </style>
 </head>
@@ -54,6 +60,7 @@
 <header>
   <h1>ABrid</h1>
   <span class="who" id="who"></span>
+  <button id="notifyBtn">Notifications</button>
   <form method="post" action="/web/logout" style="margin:0"><button>Log out</button></form>
 </header>
 <main>
@@ -71,6 +78,25 @@
     </form>
   </section>
 </main>
+<dialog id="notify">
+  <h2>Get notified in Claude Code</h2>
+  <p>With this set up, every new ABrid message (from people or the other agent) is pushed straight into your Claude Code session, even when it is idle, and it replies in the thread. Uses Claude Code's channels feature (research preview; needs Claude Code logged in with a claude.ai account). Codex has no equivalent yet.</p>
+  <div id="notifyStart">
+    <p>This creates a personal notification key. Making a new one revokes your old one.</p>
+    <button class="primary" id="makeKey">Create my key and show setup</button>
+  </div>
+  <div id="notifySteps" hidden>
+    <p class="warn">Your key is shown only now. It lets the add-on read ABrid messages as you; don't share it.</p>
+    <ol>
+      <li>On the computer where you run Claude Code, run once (if you set this up before, first run <code>claude mcp remove --scope user abrid-notify</code>):
+        <pre id="setupCmd"></pre></li>
+      <li>From then on, start Claude Code like this when you want notifications (it shows a one-time warning about development channels; choose "I am using this for local development"):
+        <pre>claude --dangerously-load-development-channels server:abrid-notify</pre></li>
+    </ol>
+    <p>Also connect the normal agent tools if you have not: <code>claude mcp add --transport http --scope user abrid <span class="mcpurl"></span></code>, then /mcp, Authenticate.</p>
+  </div>
+  <p style="text-align:right;margin-bottom:0"><button id="closeNotify">Close</button></p>
+</dialog>
 <script>
 const $ = id => document.getElementById(id);
 let current = null, lastShown = 0, version = -1, threads = [];
@@ -141,6 +167,17 @@ $('newBtn').onclick = async () => {
   const title = $('newTitle').value.trim(); if (!title) return;
   const r = await api('/api/threads', { method: 'POST', body: JSON.stringify({ title }) });
   $('newTitle').value = ''; await loadThreads(); openThread(r.thread_id);
+};
+$('notifyBtn').onclick = () => { $('notifyStart').hidden = false; $('notifySteps').hidden = true; $('notify').showModal(); };
+$('closeNotify').onclick = () => $('notify').close();
+$('makeKey').onclick = async () => {
+  const r = await api('/api/notify-key', { method: 'POST', body: '{}' });
+  $('setupCmd').textContent =
+    'mkdir -p ~/.claude && curl -fsSL ' + r.url + '/channel.py -o ~/.claude/abrid_channel.py\n' +
+    'claude mcp add --scope user abrid-notify -e ABRID_URL=' + r.url + ' -e ABRID_KEY=' + r.key +
+    ' -- python3 "$HOME/.claude/abrid_channel.py"';
+  document.querySelectorAll('.mcpurl').forEach(e => e.textContent = r.url + '/mcp');
+  $('notifyStart').hidden = true; $('notifySteps').hidden = false;
 };
 async function loop() {
   while (true) {
