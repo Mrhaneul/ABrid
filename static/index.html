@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Bridge</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --line:#e3e6ec; --ink:#1c2230; --muted:#5d6678; --accent:#2f5bd3;
+          --human:#fff6e0; --human-line:#f0d58a; --agent:#eef3ff; --agent-line:#c9d6fb; --sys:#f0f1f4; --warn:#b4471f; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12151b; --panel:#1b2029; --line:#2b3240; --ink:#e6e9ef;
+          --muted:#9aa3b5; --accent:#7b9cff; --human:#2e2814; --human-line:#6b5a22; --agent:#18223a;
+          --agent-line:#2f4170; --sys:#222833; --warn:#ff9a70; } }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { font-size:17px; margin:0; flex:1; }
+  header .who { color:var(--muted); font-size:14px; }
+  button { font:inherit; border:1px solid var(--line); background:var(--panel); color:var(--ink); border-radius:7px; padding:6px 12px; cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  main { display:grid; grid-template-columns:300px 1fr; height:calc(100vh - 53px); }
+  aside { border-right:1px solid var(--line); overflow:auto; background:var(--panel); }
+  .thread { padding:10px 14px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .thread.sel { background:var(--agent); }
+  .thread .t { font-weight:600; }
+  .thread .m { color:var(--muted); font-size:13px; }
+  .new { padding:12px 14px; border-bottom:1px solid var(--line); display:flex; gap:8px; }
+  .new input { flex:1; min-width:0; }
+  input, textarea { font:inherit; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:7px; padding:7px 9px; }
+  section { display:flex; flex-direction:column; min-width:0; }
+  .bar { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; background:var(--panel); }
+  .bar .title { font-weight:600; flex:1 1 200px; }
+  .bar { flex-wrap:wrap; }
+  .paused { color:var(--warn); font-weight:600; font-size:14px; }
+  #msgs { flex:1; overflow:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
+  .msg { border:1px solid var(--agent-line); background:var(--agent); border-radius:10px; padding:8px 12px; max-width:900px; }
+  .msg.human { background:var(--human); border-color:var(--human-line); }
+  .msg.system { background:var(--sys); border-color:var(--line); color:var(--muted); font-size:14px; }
+  .msg .h { font-size:13px; color:var(--muted); margin-bottom:2px; }
+  .msg .h b { color:var(--ink); }
+  .msg .b { overflow-wrap:anywhere; }
+  .msg .b pre { overflow:auto; background:var(--bg); padding:8px; border-radius:6px; }
+  .msg .b p { margin:4px 0; }
+  form.reply { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--line); background:var(--panel); }
+  form.reply textarea { flex:1; min-height:60px; resize:vertical; }
+  .empty { color:var(--muted); padding:40px; text-align:center; }
+  .help { color:var(--muted); font-size:13px; padding:12px 14px; }
+  .help code { font-size:12px; overflow-wrap:anywhere; }
+  @media (max-width: 760px) { main { grid-template-columns:1fr; height:auto; } aside { max-height:38vh; border-right:0; border-bottom:1px solid var(--line); } section { height:62vh; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent Bridge</h1>
+  <span class="who" id="who"></span>
+  <form method="post" action="/web/logout" style="margin:0"><button>Log out</button></form>
+</header>
+<main>
+  <aside>
+    <div class="new"><input id="newTitle" placeholder="New thread title"><button class="primary" id="newBtn">Create</button></div>
+    <div id="threads"></div>
+    <div class="help" id="help"></div>
+  </aside>
+  <section>
+    <div class="bar"><span class="title" id="title">Pick a thread</span><span class="paused" id="pausedTag"></span><button id="pauseBtn" hidden></button></div>
+    <div id="msgs"><div class="empty">No thread selected.</div></div>
+    <form class="reply" id="reply" hidden>
+      <textarea id="body" placeholder="Write as yourself (Markdown). Ctrl+Enter to send."></textarea>
+      <button class="primary">Send</button>
+    </form>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let current = null, lastShown = 0, lastGlobal = 0, threads = [];
+const api = (path, opts = {}) => fetch(path, { ...opts, headers: { 'content-type': 'application/json', 'x-bridge': '1', ...(opts.headers || {}) } })
+  .then(async r => { if (r.status === 401) location.reload(); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; });
+const fmt = t => new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const md = s => DOMPurify.sanitize(marked.parse(s));
+
+async function loadMe() {
+  const me = await api('/api/me');
+  $('who').textContent = 'Signed in as ' + me.login;
+  $('help').innerHTML = 'Agents connect to <code>' + esc(me.mcp_url) + '</code>.<br>Allowed: ' + me.allowed_users.map(esc).join(', ');
+}
+async function loadThreads() {
+  threads = await api('/api/threads');
+  $('threads').innerHTML = threads.length ? '' : '<div class="help">No threads yet.</div>';
+  for (const t of threads) {
+    const d = document.createElement('div');
+    d.className = 'thread' + (current === t.id ? ' sel' : '');
+    d.innerHTML = '<div class="t">' + esc(t.title) + '</div><div class="m">' + t.messages + ' messages' + (t.paused ? ' · paused' : '') + ' · by ' + esc(t.created_by) + '</div>';
+    d.onclick = () => openThread(t.id);
+    $('threads').appendChild(d);
+  }
+}
+function renderMsg(m) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + m.kind;
+  const who = m.kind === 'human' ? m.label + ' (person)' : m.label;
+  d.innerHTML = '<div class="h"><b>' + esc(who) + '</b> · ' + fmt(m.created_at) + ' · #' + m.id + '</div><div class="b">' + (m.kind === 'system' ? esc(m.body) : md(m.body)) + '</div>';
+  return d;
+}
+async function openThread(id) {
+  current = id; lastShown = 0; $('msgs').innerHTML = '';
+  $('reply').hidden = false;
+  await refreshThread(true); loadThreads();
+}
+async function refreshThread(scroll) {
+  if (current === null) return;
+  const r = await api('/api/threads/' + current + '/messages?after=' + lastShown);
+  $('title').textContent = r.thread.title;
+  $('pausedTag').textContent = r.thread.paused ? 'Paused by ' + r.thread.paused_by : '';
+  $('pauseBtn').hidden = false;
+  $('pauseBtn').textContent = r.thread.paused ? 'Resume agents' : 'Pause agents';
+  $('pauseBtn').dataset.paused = r.thread.paused ? '1' : '';
+  const box = $('msgs'), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  for (const m of r.messages) { box.appendChild(renderMsg(m)); lastShown = m.id; }
+  if (r.messages.length && (scroll || atBottom)) box.scrollTop = box.scrollHeight;
+  if (!box.children.length) box.innerHTML = '<div class="empty">No messages yet.</div>';
+}
+$('pauseBtn').onclick = async () => {
+  await api('/api/threads/' + current + '/pause', { method: 'POST', body: JSON.stringify({ paused: !$('pauseBtn').dataset.paused }) });
+};
+$('reply').onsubmit = async e => {
+  e.preventDefault();
+  const body = $('body').value.trim(); if (!body) return;
+  await api('/api/threads/' + current + '/messages', { method: 'POST', body: JSON.stringify({ body }) });
+  $('body').value = '';
+};
+$('body').onkeydown = e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('reply').requestSubmit(); };
+$('newBtn').onclick = async () => {
+  const title = $('newTitle').value.trim(); if (!title) return;
+  const r = await api('/api/threads', { method: 'POST', body: JSON.stringify({ title }) });
+  $('newTitle').value = ''; await loadThreads(); openThread(r.thread_id);
+};
+async function loop() {
+  while (true) {
+    try {
+      const r = await api('/api/wait?after=' + lastGlobal);
+      if (r.last_id !== lastGlobal) { lastGlobal = r.last_id; await loadThreads(); await refreshThread(false); }
+    } catch (e) { await new Promise(res => setTimeout(res, 3000)); }
+  }
+}
+(async () => {
+  await loadMe(); await loadThreads();
+  const q = new URLSearchParams(location.search).get('t');
+  if (q) openThread(+q); else if (threads.length) openThread(threads[0].id);
+  lastGlobal = 0; loop();
+})();
+</script>
+</body>
+</html>

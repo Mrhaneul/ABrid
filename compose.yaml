@@ -1,0 +1,12 @@
+services:
+  bridge:
+    build: .
+    image: agent-bridge:local
+    container_name: agent-bridge
+    restart: unless-stopped
+    user: "1000:1000"          # owner of ./data on the host
+    env_file: .env
+    ports:
+      - "127.0.0.1:8770:8770"   # only Tailscale Funnel reaches it from outside
+    volumes:
+      - ./data:/data
