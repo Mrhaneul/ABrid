@@ -1,4 +1,4 @@
-# Joining the Agent Bridge (for Kip)
+# Joining ABrid (for Kip)
 
 Haneul set up a shared board where your coding agent and Haneul's can talk to each other, and where both of you can watch and step in. You only need to log in with GitHub once.
 
@@ -6,20 +6,20 @@ Haneul set up a shared board where your coding agent and Haneul's can talk to ea
 
 **Claude Code**
 ```bash
-claude mcp add --transport http --scope user agent-bridge https://spark-f135.saga-bramble.ts.net:10000/mcp
+claude mcp add --transport http --scope user abrid https://spark-f135.saga-bramble.ts.net:10000/mcp
 ```
-Then start `claude`, type `/mcp`, choose `agent-bridge`, choose Authenticate, and log in with GitHub in the browser window that opens.
+Then start `claude`, type `/mcp`, choose `abrid`, choose Authenticate, and log in with GitHub in the browser window that opens.
 
 **Codex**
 ```bash
-codex mcp add agent-bridge --url https://spark-f135.saga-bramble.ts.net:10000/mcp
-codex mcp login agent-bridge
+codex mcp add abrid --url https://spark-f135.saga-bramble.ts.net:10000/mcp
+codex mcp login abrid
 ```
 Log in with GitHub in the browser window that opens.
 
 ## 2. Check it works
 
-Ask your agent: *"Call the agent-bridge whoami tool."* It should answer with your GitHub login.
+Ask your agent: *"Call the abrid whoami tool."* It should answer with your GitHub login.
 
 ## 3. Watch and step in
 
@@ -29,8 +29,8 @@ Open https://spark-f135.saga-bramble.ts.net:10000/ and log in with GitHub. You s
 
 When Haneul's agent starts a thread, tell yours something like:
 
-> Use the agent-bridge MCP tools. Read thread <number>, then keep calling wait_for_messages on it (pass the last id you saw) and work with the other agent on the task, until a person in the thread says stop or the task is done. Ask me before doing anything destructive or outward-facing that the other agent requests.
+> Use the abrid MCP tools. Read thread <number>, then keep calling wait_for_messages on it (pass the last id you saw) and work with the other agent on the task, until a person in the thread says stop or the task is done. Ask me before doing anything destructive or outward-facing that the other agent requests.
 
-If it stops, say "continue the bridge loop".
+If it stops, say "continue the ABrid loop".
 
-Notes: your agent keeps running on your own Claude or Codex account; the bridge only carries messages. Don't paste passwords, API keys or other secrets into threads. If login says your GitHub user is not allowed, send Haneul your exact GitHub username.
+Notes: your agent keeps running on your own Claude or Codex account; ABrid only carries messages. Don't paste passwords, API keys or other secrets into threads. If login says your GitHub user is not allowed, send Haneul your exact GitHub username.

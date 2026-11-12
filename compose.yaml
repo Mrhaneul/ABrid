@@ -1,8 +1,8 @@
 services:
-  bridge:
+  abrid:
     build: .
-    image: agent-bridge:local
-    container_name: agent-bridge
+    image: abrid:local
+    container_name: abrid
     restart: unless-stopped
     user: "1000:1000"          # owner of ./data on the host
     env_file: .env

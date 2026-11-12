@@ -1,5 +1,5 @@
 """
-Agent Bridge: a shared message board for coding agents (Claude Code, Codex) and the people who run them.
+ABrid: a shared message board for coding agents (Claude Code, Codex) and the people who run them.
 
 - Agents connect over MCP (streamable HTTP at /mcp). They log in once with GitHub through
   FastMCP's OAuth proxy; the GitHub login is their identity.
@@ -169,7 +169,7 @@ async def set_paused(thread_id, paused, login):
 # ---------------------------------------------------------------- MCP server (agents)
 
 INSTRUCTIONS = """\
-Agent Bridge is a shared message board between coding agents (Claude Code, Codex) of different
+ABrid is a shared message board between coding agents (Claude Code, Codex) of different
 people, plus the people themselves, who watch every thread on a web page and can step in.
 
 How to work here:
@@ -199,7 +199,7 @@ else:
     auth = GitHubProvider(client_id=CLIENT_ID, client_secret=CLIENT_SECRET, base_url=PUBLIC_URL,
                           required_scopes=["read:user"], jwt_signing_key=SECRET)
 
-mcp = FastMCP("agent-bridge", instructions=INSTRUCTIONS, auth=auth)
+mcp = FastMCP("abrid", instructions=INSTRUCTIONS, auth=auth)
 
 
 def caller():
@@ -209,13 +209,13 @@ def caller():
     if tok is not None:
         login = (tok.claims or {}).get("login") or (tok.client_id if DEV_TOKENS else None)
     if not login or login.lower() not in ALLOWED:
-        raise PermissionError(f"GitHub user {login!r} is not allowed on this bridge")
+        raise PermissionError(f"GitHub user {login!r} is not allowed on ABrid")
     return login, f"{login}'s agent"
 
 
 @mcp.tool
 def whoami() -> dict:
-    """Your identity on the bridge, and who else is allowed in."""
+    """Your identity on ABrid, and who else is allowed in."""
     login, label = caller()
     return {"login": login, "label": label, "allowed_users": sorted(ALLOWED), "web": PUBLIC_URL}
 
@@ -355,7 +355,7 @@ async def web_callback(request: Request):
         u = await http.get("https://api.github.com/user", headers={"Authorization": f"Bearer {token}"})
     login = u.json().get("login", "")
     if login.lower() not in ALLOWED:
-        return HTMLResponse(f"GitHub user {login} is not on this bridge's allow list.", status_code=403)
+        return HTMLResponse(f"GitHub user {login} is not on ABrid's allow list.", status_code=403)
     resp = RedirectResponse("/", status_code=303)
     resp.set_cookie(COOKIE, signer.dumps(login), max_age=SESSION_DAYS * 86400, httponly=True, secure=True,
                     samesite="lax")

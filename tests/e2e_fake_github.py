@@ -12,7 +12,7 @@ Checks:
      exchange), then tools work under the GitHub login; a GitHub user not on the allow list gets in
      through OAuth but every tool refuses
   2. web login for people: allowed user sees the board, not-allowed user and a forged state are refused
-  3. Codex CLI: `codex mcp login` completes against the bridge (separate CODEX_HOME, user config untouched)
+  3. Codex CLI: `codex mcp login` completes against ABrid (separate CODEX_HOME, user config untouched)
   4. Claude Code: `claude mcp list` sees the server as needing authentication (discovery works)
 
   python tests/e2e_fake_github.py
@@ -234,7 +234,7 @@ async def main():
         github["next_login"] = "mallory"
         await page.goto(BASE + "/web/login")
         body = await page.text_content("body")
-        check("web login (not-allowed user) refused", "not on this bridge's allow list" in body, body[:60])
+        check("web login (not-allowed user) refused", "not on ABrid's allow list" in body, body[:60])
         resp = await page.goto(BASE + "/auth/callback/web?code=x&state=forged")
         check("web callback with forged state refused", resp.status == 400)
         await browser.close()
@@ -246,10 +246,10 @@ async def main():
             home.mkdir()
             (home / "config.toml").write_text('mcp_oauth_credentials_store = "file"\n')
             env = dict(os.environ, CODEX_HOME=str(home), BROWSER="true", DISPLAY="")
-            subprocess.run([codex, "mcp", "add", "agent-bridge", "--url", f"{BASE}/mcp"], env=env,
+            subprocess.run([codex, "mcp", "add", "abrid", "--url", f"{BASE}/mcp"], env=env,
                            check=True, capture_output=True, timeout=60)
             github["next_login"] = "kip"
-            proc = await asyncio.create_subprocess_exec(codex, "mcp", "login", "agent-bridge", env=env,
+            proc = await asyncio.create_subprocess_exec(codex, "mcp", "login", "abrid", env=env,
                                                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
             out, url = [], None
             async def read_lines():
@@ -295,14 +295,14 @@ async def main():
         cdir.mkdir()
         claude = shutil.which("claude")
         if claude:
-            subprocess.run([claude, "mcp", "add", "--transport", "http", "agent-bridge-e2e", f"{BASE}/mcp"],
+            subprocess.run([claude, "mcp", "add", "--transport", "http", "abrid-e2e", f"{BASE}/mcp"],
                            cwd=cdir, capture_output=True, timeout=60)
             lst = await asyncio.create_subprocess_exec(claude, "mcp", "list", cwd=str(cdir),
                                                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
             text = (await asyncio.wait_for(lst.communicate(), 120))[0].decode()
-            line = next((s for s in text.splitlines() if "agent-bridge-e2e" in s), text[-200:])
+            line = next((s for s in text.splitlines() if "abrid-e2e" in s), text[-200:])
             check("claude mcp list: server found, asks for authentication", "auth" in line.lower(), line.strip())
-            subprocess.run([claude, "mcp", "remove", "agent-bridge-e2e"], cwd=cdir, capture_output=True, timeout=60)
+            subprocess.run([claude, "mcp", "remove", "abrid-e2e"], cwd=cdir, capture_output=True, timeout=60)
 
     srv.should_exit = gh.should_exit = True
     await task
