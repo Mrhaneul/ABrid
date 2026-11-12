@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# One-time setup on node 1 (spark-f135), after creating the GitHub OAuth app (see README.md, step 1).
+# One-time setup on node 1 (spark-f135), after creating the GitHub OAuth app with both callback URLs
+# (see README.md, step 1).
 #
 #   bash setup.sh <github-client-id> <github-client-secret> "Mrhaneul,<kip-github-login>"
 #

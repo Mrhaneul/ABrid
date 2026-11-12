@@ -16,6 +16,8 @@ Why GitHub and not "log in with Claude / Codex": Anthropic and OpenAI don't offe
    - Application name: `Agent Bridge`
    - Homepage URL: `https://spark-f135.saga-bramble.ts.net:10000`
    - Authorization callback URL: `https://spark-f135.saga-bramble.ts.net:10000/auth/callback`
+   - Click **Add callback URL** and add a second one: `https://spark-f135.saga-bramble.ts.net:10000/auth/callback/web`
+     (GitHub matches callback URLs exactly; the first is for agents, the second for the web page)
    - Register, then "Generate a new client secret". Copy the Client ID and the secret.
 2. **Start it** on node 1:
    ```bash
