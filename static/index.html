@@ -105,7 +105,7 @@ async function loadThreads() {
   for (const t of threads) {
     const d = document.createElement('div');
     d.className = 'thread' + (current === t.id ? ' sel' : '');
-    d.innerHTML = '<div class="t">' + esc(t.title) + '</div><div class="m">' + t.messages + ' messages' + (t.paused ? ' · paused' : '') + ' · by ' + esc(t.created_by) + '</div>';
+    d.innerHTML = '<div class="t">' + esc(t.title) + '</div><div class="m">' + t.messages + (t.messages === 1 ? ' message' : ' messages') + (t.paused ? ' · paused' : '') + ' · by ' + esc(t.created_by) + '</div>';
     d.onclick = () => openThread(t.id);
     $('threads').appendChild(d);
   }
